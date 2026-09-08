@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Two-Column Comparator</title>
+<style>
+  :root { font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color:#172033; background:#f5f7fb; }
+  * { box-sizing:border-box; }
+  body { margin:0; }
+  .wrap { max-width:1250px; margin:0 auto; padding:28px 20px 50px; }
+  h1 { margin:0 0 8px; font-size:28px; }
+  .sub { color:#667085; margin-bottom:22px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  .card { background:white; border:1px solid #dfe4ec; border-radius:12px; padding:16px; box-shadow:0 2px 8px rgba(16,24,40,.04); }
+  label { display:block; font-weight:700; margin-bottom:8px; }
+  textarea { width:100%; min-height:230px; resize:vertical; border:1px solid #cfd6e2; border-radius:8px; padding:12px; font:14px ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .controls { display:flex; flex-wrap:wrap; gap:18px; align-items:end; margin:18px 0; }
+  .control { background:white; border:1px solid #dfe4ec; border-radius:10px; padding:12px 14px; }
+  input[type=number], select { width:180px; padding:7px; border:1px solid #cfd6e2; border-radius:6px; background:white; }
+  input[type=checkbox] { transform:translateY(1px); margin-right:7px; }
+  button { border:0; border-radius:8px; padding:10px 16px; font-weight:700; cursor:pointer; }
+  .primary { background:#2563eb; color:white; }
+  .secondary { background:#e9eef7; color:#172033; }
+  .stats { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:18px 0; }
+  .stat { background:white; border:1px solid #dfe4ec; border-radius:10px; padding:14px; }
+  .stat .n { font-size:24px; font-weight:800; }
+  .stat .t { color:#667085; font-size:13px; margin-top:3px; }
+  .table-wrap { overflow:auto; background:white; border:1px solid #dfe4ec; border-radius:12px; }
+  table { width:100%; border-collapse:collapse; min-width:760px; }
+  th,td { padding:9px 11px; border-bottom:1px solid #edf0f4; text-align:left; vertical-align:top; }
+  th { background:#f8fafc; position:sticky; top:0; z-index:1; font-size:13px; }
+  td { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:13px; }
+  tr.match td { background:#f6fff8; }
+  tr.approx td { background:#fffaf0; }
+  tr.missing td { background:#fff6f6; }
+  .badge { display:inline-block; padding:2px 7px; border-radius:999px; font:700 11px system-ui; }
+  .exact { background:#dff7e5; color:#176b2d; }
+  .similar { background:#fff0c7; color:#8a5a00; }
+  .none { background:#fde1e1; color:#9b1c1c; }
+  .hint { color:#667085; font-size:12px; margin-top:8px; line-height:1.4; }
+  .empty { padding:30px; text-align:center; color:#667085; }
+  @media (max-width:800px) { .grid,.stats { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Two-Column Comparator</h1>
+  <div class="sub">Paste two Excel columns. Formatting is discarded and values are compared as text.</div>
+
+  <div class="grid">
+    <div class="card">
+      <label for="colA">First column</label>
+      <textarea id="colA" placeholder="Paste one Excel column here..."></textarea>
+      <div class="hint">Original Excel row numbers are calculated from the pasted order, starting at row 1.</div>
+    </div>
+    <div class="card">
+      <label for="colB">Second column</label>
+      <textarea id="colB" placeholder="Paste the second Excel column here..."></textarea>
+      <div class="hint">Blank pasted cells are ignored by default; row numbers refer to non-blank pasted values.</div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div class="control">
+      <label for="threshold">Similarity threshold (%)</label>
+      <input id="threshold" type="number" min="0" max="100" step="1" value="90">
+    </div>
+    <div class="control">
+      <label><input id="ignorePunct" type="checkbox" checked> Ignore dots, slashes and similar punctuation</label>
+      <div class="hint">Example: AB.123 and AB/123 become comparable.</div>
+    </div>
+    <div class="control">
+      <label><input id="ignoreCase" type="checkbox" checked> Ignore letter case (CAPS)</label>
+    </div>
+    <div class="control">
+      <label>Whitespace handling</label>
+      <select id="whitespaceMode">
+        <option value="none">Keep all whitespace</option>
+        <option value="trim" selected>Ignore front & back whitespace</option>
+        <option value="all">Ignore all whitespace</option>
+      </select>
+      <div class="hint">"All" makes spaces inside values irrelevant too.</div>
+    </div>
+    <button class="primary" onclick="compare()">Compare</button>
+    <button class="secondary" onclick="clearAll()">Clear</button>
+  </div>
+
+  <div id="stats" class="stats"></div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Row 1</th>
+          <th>Value 1</th>
+          <th>Row 2</th>
+          <th>Matched value 2</th>
+          <th>Similarity</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="results"><tr><td colspan="6" class="empty">Paste two columns and click Compare.</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+function parseColumn(id) {
+  const ta = document.getElementById(id);
+  // Prefer plain text because it preserves what Excel put on the clipboard as text.
+  // This intentionally removes formatting.
+  return ta.value.split(/\r?\n/).map((v, i) => ({
+    row: i + 1,
+    value: v.replace(/\r/g, '')
+  })).filter(x => x.value.trim() !== '');
+}
+
+function normalize(s) {
+  let x = s;
+
+  const whitespaceMode = document.getElementById('whitespaceMode').value;
+  if (whitespaceMode === 'trim') {
+    x = x.trim();
+  } else if (whitespaceMode === 'all') {
+    x = x.replace(/\\s/g, '');
+  }
+
+  if (document.getElementById('ignoreCase').checked) {
+    x = x.toLowerCase();
+  }
+
+  if (document.getElementById('ignorePunct').checked) {
+    // Remove common separators/punctuation while keeping letters and digits.
+    x = x.replace(/[.,\\/\\_\\-:;()[\\]{}'"]/g, '');
+  }
+
+  return x;
+}
+
+function levenshtein(a,b) {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  if (a.length > b.length) [a,b] = [b,a];
+  let prev = Array.from({length:a.length+1}, (_,i)=>i);
+  for (let j=1;j<=b.length;j++) {
+    const cur = [j];
+    for (let i=1;i<=a.length;i++) {
+      cur[i] = Math.min(
+        cur[i-1] + 1,
+        prev[i] + 1,
+        prev[i-1] + (a[i-1] === b[j-1] ? 0 : 1)
+      );
+    }
+    prev = cur;
+  }
+  return prev[a.length];
+}
+
+function similarity(a,b) {
+  if (a === b) return 100;
+  const maxLen = Math.max(a.length,b.length);
+  if (!maxLen) return 100;
+  return Math.max(0, (1 - levenshtein(a,b)/maxLen) * 100);
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function compare() {
+  const A = parseColumn('colA');
+  const B = parseColumn('colB');
+  const threshold = Math.max(0, Math.min(100, Number(document.getElementById('threshold').value) || 0));
+
+  // Greedy one-to-one matching. Exact matches are always reserved first.
+  const na = A.map(x => ({...x, n: normalize(x.value)}));
+  const nb = B.map(x => ({...x, n: normalize(x.value)}));
+  const usedB = new Set();
+  const matches = [];
+  const missingA = [];
+
+  // Pass 1: exact normalized matches.
+  for (const a of na) {
+    let found = -1;
+    for (let j=0;j<nb.length;j++) {
+      if (!usedB.has(j) && a.n === nb[j].n) { found=j; break; }
+    }
+    if (found >= 0) {
+      usedB.add(found);
+      matches.push({a, b:nb[found], score:100, exact:true});
+    }
+  }
+
+  // Pass 2: approximate matches, highest score first for each A.
+  for (const a of na) {
+    if (matches.some(m => m.a.row === a.row)) continue;
+    let best = null;
+    for (let j=0;j<nb.length;j++) {
+      if (usedB.has(j)) continue;
+      const score = similarity(a.n, nb[j].n);
+      if (score >= threshold && (!best || score > best.score)) best = {j,b:nb[j],score};
+    }
+    if (best) {
+      usedB.add(best.j);
+      matches.push({a,b:best.b,score:best.score,exact:false});
+    } else {
+      missingA.push(a);
+    }
+  }
+
+  const missingB = nb.filter((_,j)=>!usedB.has(j));
+  // Display matched rows first, then unmatched rows from both sides.
+  matches.sort((x,y)=>x.a.row-y.a.row);
+
+  const rows = [];
+  for (const m of matches) rows.push(`
+    <tr class="${m.exact ? 'match' : 'approx'}">
+      <td>${m.a.row}</td><td>${escapeHtml(m.a.value)}</td>
+      <td>${m.b.row}</td><td>${escapeHtml(m.b.value)}</td>
+      <td>${m.score.toFixed(1)}%</td>
+      <td><span class="badge ${m.exact?'exact':'similar'}">${m.exact?'Identical':'Similar'}</span></td>
+    </tr>`);
+
+  for (const a of missingA) rows.push(`
+    <tr class="missing">
+      <td>${a.row}</td><td>${escapeHtml(a.value)}</td><td>—</td><td>—</td><td>—</td>
+      <td><span class="badge none">Missing in 2</span></td>
+    </tr>`);
+
+  for (const b of missingB) rows.push(`
+    <tr class="missing">
+      <td>—</td><td>—</td><td>${b.row}</td><td>${escapeHtml(b.value)}</td><td>—</td>
+      <td><span class="badge none">Missing in 1</span></td>
+    </tr>`);
+
+  document.getElementById('results').innerHTML =
+    rows.length ? rows.join('') : '<tr><td colspan="6" class="empty">No values to compare.</td></tr>';
+
+  const identical = matches.filter(m=>m.exact).length;
+  const approximate = matches.length - identical;
+  const missing = missingA.length + missingB.length;
+
+  document.getElementById('stats').innerHTML = `
+    <div class="stat"><div class="n">${matches.length}</div><div class="t">Total matches</div></div>
+    <div class="stat"><div class="n">${missing}</div><div class="t">Missing matches</div></div>
+    <div class="stat"><div class="n">${identical}</div><div class="t">Identical matches</div></div>
+    <div class="stat"><div class="n">${approximate}</div><div class="t">Similar matches</div></div>`;
+}
+
+function clearAll() {
+  document.getElementById('colA').value = '';
+  document.getElementById('colB').value = '';
+  document.getElementById('results').innerHTML = '<tr><td colspan="6" class="empty">Paste two columns and click Compare.</td></tr>';
+  document.getElementById('stats').innerHTML = '';
+}
+</script>
+</body>
+</html>
